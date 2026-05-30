@@ -1,0 +1,93 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+
+start () {
+    DOMAINS_DIR=/tmp/dnsmasq.d
+    STATIC_DIR=/etc/dnsmasq.d
+    DOMAINS=https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Russia/inside-dnsmasq-nfset.lst
+    YOUTUBE_LIST=https://raw.githubusercontent.com/itdoginfo/allow-domains/main/Services/youtube.lst
+    TELEGRAM_LIST=https://raw.githubusercontent.com/itdoginfo/allow-domains/refs/heads/main/Services/telegram.lst
+    DOMAINS_PATH="$DOMAINS_DIR/domains.lst"
+    SING_BOX_DIR=/tmp/sing-box
+    SING_BOX_DOMAIN="$SING_BOX_DIR/domains"
+    
+    [ ! -d "$DOMAINS_DIR" ] && mkdir -p "$DOMAINS_DIR"
+    [ -d "$STATIC_DIR" ] && cp -a "$STATIC_DIR"/* "$DOMAINS_DIR"/
+
+    count=0
+    while [ $count -lt 10 ]; do
+        echo "Check github availability"
+        if curl -m 3 github.com; then
+            echo "Download domains list"
+            curl -sf $DOMAINS --output $DOMAINS_PATH
+	    echo "Download telegram list and replace it"
+	    TO_CHANGE=$(curl -sf $TELEGRAM_LIST)
+	    for line in $TO_CHANGE; do
+	        echo "nftset=/$line/4#inet#fw4#vpn_domains" >> $DOMAINS_PATH
+            done
+	    break
+        else
+            echo "GitHub is not available. Check the internet availability [$count]"
+            count=$((count+1))
+        fi
+    done
+    while IFS= read -r line; do
+    	line=$(echo "$line" | tr -d '\r' | xargs)
+    	[ -z "$line" ] && continue
+    	printf 'nftset=/%s/4#inet#fw4#vpn_domains\n' "$line" >> "$DOMAINS_PATH"
+    done < /etc/additional_hosts
+
+    if dnsmasq --conf-dir=$DOMAINS_DIR --test 2>&1 | grep -q "syntax check OK"; then
+        echo "Restart dnsmasq"
+        /etc/init.d/dnsmasq restart
+    else
+        echo "Syntax is incorrect. Check file $DOMAINS_PATH"
+    fi
+
+    SING_BOX_DIR=/tmp/sing-box
+    SING_BOX_LIST="$SING_BOX_DIR/domains.list"
+    SING_BOX_JSON="$SING_BOX_DIR/domains.json"
+    SING_BOX_SRS="$SING_BOX_DIR/domains.srs"
+
+    [ ! -d "$SING_BOX_DIR" ] && mkdir -p "$SING_BOX_DIR"
+
+    grep '^nftset=' "$DOMAINS_PATH" \
+    | sed -E 's@^nftset=/([^/]+)/.*@\1@' \
+    | sort -u \
+    > "$SING_BOX_LIST"
+
+    {
+    echo '{'
+    echo '  "version": 1,'
+    echo '  "rules": ['
+    echo '    {'
+    echo '      "domain_suffix": ['
+
+    LAST_LINE=$(wc -l < "$SING_BOX_LIST")
+
+    CURRENT=0
+
+    while IFS= read -r domain; do
+    CURRENT=$((CURRENT + 1))
+
+    if [ "$CURRENT" -lt "$LAST_LINE" ]; then
+      printf '        "%s",\n' "$domain"
+    else
+      printf '        "%s"\n' "$domain"
+    fi
+
+    done < "$SING_BOX_LIST"
+
+    echo '      ]'
+    echo '    }'
+    echo '  ]'
+    echo '}'
+
+    } > "$SING_BOX_JSON"
+    echo "[+] sing-box JSON rule-set generated"
+    sing-box rule-set compile "$SING_BOX_JSON" -o "$SING_BOX_SRS"
+    echo "[+] sing-box SRS rule-set generated"
+    /etc/init.d/sing-box reload
+    echo "[+] sing-box reloaded"
+}
