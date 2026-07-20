@@ -1,4 +1,4 @@
---/usr/lib/lua/luci/cbi/additional_hosts.lua
+--/usr/lib/lua/luci/model/cbi/additional_hosts.lua
 local fs = require "nixio.fs"
 local sys = require "luci.sys"
 
